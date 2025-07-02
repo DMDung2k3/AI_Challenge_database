@@ -1,49 +1,31 @@
+# agent_integration.py - Integration helpers cho agents với database
 from typing import Dict, Any, Optional
 import json
 import time
-from datetime import datetime, timedelta
-import tenacity
-import logging
-from database.connections.vector_db import VectorDB
-from database.connections.graph_db import GraphDB
-from database.connections.metadata_db import MetadataDB
-from database.connections.cache_db import CacheDB
-from database.models.video_metadata import VideoMetadata, VideoMetadataPydantic
-from database.models.user_session import UserSession, UserSessionPydantic
-from database.models.conversation import Conversation, ConversationPydantic
-from database.models.processing_job import ProcessingJob, ProcessingJobPydantic
+from datetime import datetime
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from connections import db_manager
+from models import VideoMetadata, UserSession, ConversationHistory, ProcessingJob
 
 class AgentDatabaseIntegration:
-    """Helper class to integrate agents with database."""
+    """Helper class để integrate agents với database"""
     
     def __init__(self):
-        self.vector_db = VectorDB()
-        self.graph_db = GraphDB()
-        self.metadata_db = MetadataDB()
-        self.cache_db = CacheDB()
-        self.sql_session = self.metadata_db.get_session()
-
-    @tenacity.retry(
-        stop=tenacity.stop_after_attempt(3),
-        wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
-        retry=tenacity.retry_if_exception_type(Exception),
-        before_sleep=lambda retry_state: logger.warning(f"Retrying database operation: attempt {retry_state.attempt_number}")
-    )
+        self.sql_session = db_manager.get_sql_session()
+        self.redis_client = db_manager.get_redis_client()
+        self.vector_db = db_manager.get_vector_db()
+        self.graph_db = db_manager.get_graph_db()
+    
+    # Methods cho PreprocessingOrchestrator
     def save_preprocessing_result(self, video_path: str, pipeline_result: Dict[str, Any]):
-        """Save preprocessing result into database."""
+        """
+        Save preprocessing result vào database
+        Called sau khi PreprocessingOrchestrator.process_video() complete
+        """
         try:
             video_id = pipeline_result.get("video_id")
             
-            # Check Bloom filter
-            if self.cache_db.check_bloom(video_id):
-                logger.info(f"Skipping already processed video: {video_id}")
-                return None
-            
-            # Update or create video metadata
+            # Update hoặc create video metadata
             video = self.sql_session.query(VideoMetadata).filter(
                 VideoMetadata.video_id == video_id
             ).first()
@@ -60,19 +42,24 @@ class AgentDatabaseIntegration:
             video.processing_status = pipeline_result.get("status", "completed")
             video.overall_quality_score = pipeline_result.get("overall_quality_score", 0)
             video.pipeline_id = pipeline_result.get("pipeline_id")
+            
+            # Save detailed results
             video.video_processing_result = pipeline_result.get("video_processing_result")
             video.feature_extraction_result = pipeline_result.get("feature_extraction_result")
             video.knowledge_graph_result = pipeline_result.get("knowledge_graph_result")
             video.indexing_result = pipeline_result.get("indexing_result")
+            
+            # Update flags
             video.features_extracted = video.feature_extraction_result is not None
             video.indexed = video.indexing_result is not None
-            if pipeline_result.get("status") == "completed":
+            
+            if pipeline_result.get("status") == "success":
                 video.processing_completed_at = datetime.utcnow()
             
             self.sql_session.commit()
             
-            # Cache video info in Redis
-            self.cache_db.setex(
+            # Cache video info trong Redis cho fast access
+            self.redis_client.setex(
                 f"video:{video_id}",
                 3600,  # 1 hour TTL
                 json.dumps({
@@ -82,30 +69,27 @@ class AgentDatabaseIntegration:
                     "quality_score": video.overall_quality_score
                 })
             )
-            self.cache_db.add_to_bloom(video_id)
             
-            return str(video.id)
+            return video.id
             
         except Exception as e:
             self.sql_session.rollback()
-            logger.error(f"Failed to save preprocessing result: {e}")
-            raise
-
-    @tenacity.retry(
-        stop=tenacity.stop_after_attempt(3),
-        wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
-        retry=tenacity.retry_if_exception_type(Exception),
-        before_sleep=lambda retry_state: logger.warning(f"Retrying database operation: attempt {retry_state.attempt_number}")
-    )
+            raise Exception(f"Failed to save preprocessing result: {str(e)}")
+    
+    # Methods cho ConversationOrchestrator
     def load_session_context(self, session_id: str, user_id: str):
-        """Load session context from database."""
+        """
+        Load session context từ database
+        Used by ConversationOrchestrator
+        """
         try:
-            # Load from database
+            # Load từ database
             session = self.sql_session.query(UserSession).filter(
                 UserSession.session_id == session_id
             ).first()
             
             if not session:
+                # Tạo new session
                 session = UserSession(
                     session_id=session_id,
                     user_id=user_id
@@ -114,9 +98,9 @@ class AgentDatabaseIntegration:
                 self.sql_session.commit()
             
             # Load conversation history
-            conversation_history = self.sql_session.query(Conversation).filter(
-                Conversation.session_id == session_id
-            ).order_by(Conversation.timestamp.desc()).limit(10).all()
+            conversation_history = self.sql_session.query(ConversationHistory).filter(
+                ConversationHistory.session_id == session_id
+            ).order_by(ConversationHistory.timestamp.desc()).limit(10).all()
             
             # Convert to SessionContext format
             from agents.conversational.context_manager_agent import SessionContext, ConversationTurn
@@ -151,17 +135,12 @@ class AgentDatabaseIntegration:
             return session_context
             
         except Exception as e:
-            logger.error(f"Failed to load session context: {e}")
-            raise
-
-    @tenacity.retry(
-        stop=tenacity.stop_after_attempt(3),
-        wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
-        retry=tenacity.retry_if_exception_type(Exception),
-        before_sleep=lambda retry_state: logger.warning(f"Retrying database operation: attempt {retry_state.attempt_number}")
-    )
+            raise Exception(f"Failed to load session context: {str(e)}")
+    
     def save_conversation_result(self, session_id: str, conversation_flow: Dict[str, Any]):
-        """Save conversation result after ConversationOrchestrator completes."""
+        """
+        Save conversation result sau khi ConversationOrchestrator complete
+        """
         try:
             # Update session
             session = self.sql_session.query(UserSession).filter(
@@ -172,9 +151,11 @@ class AgentDatabaseIntegration:
                 session.last_activity = datetime.utcnow()
                 session.conversation_turns += 1
                 
+                # Update context từ flow result
                 if "context_updates" in conversation_flow:
                     context_data = conversation_flow["context_updates"]
                     updated_context = context_data.get("updated_context", {})
+                    
                     session.current_topic = updated_context.get("current_topic")
                     session.current_video = updated_context.get("current_video") 
                     session.active_entities = updated_context.get("active_entities", [])
@@ -193,18 +174,18 @@ class AgentDatabaseIntegration:
                     "processing_time": conversation_flow.get("total_execution_time", 0)
                 }
                 
-                turn = Conversation(**turn_data, session_id=session_id)
+                turn = ConversationHistory(**turn_data, session_id=session_id)
                 self.sql_session.add(turn)
             
             self.sql_session.commit()
             
         except Exception as e:
             self.sql_session.rollback()
-            logger.error(f"Failed to save conversation result: {e}")
-            raise
-
+            raise Exception(f"Failed to save conversation result: {str(e)}")
+    
+    # Helper methods
     def get_indexed_videos(self) -> list:
-        """Get list of indexed and ready-to-search videos."""
+        """Lấy list videos đã được indexed và ready cho search"""
         try:
             videos = self.sql_session.query(VideoMetadata).filter(
                 VideoMetadata.indexed == True,
@@ -219,18 +200,19 @@ class AgentDatabaseIntegration:
             } for v in videos]
             
         except Exception as e:
-            logger.error(f"Failed to get indexed videos: {e}")
-            raise
-
+            raise Exception(f"Failed to get indexed videos: {str(e)}")
+    
     def cleanup_old_sessions(self, days: int = 7):
-        """Cleanup old sessions."""
+        """Cleanup old sessions"""
         try:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
             
-            self.sql_session.query(Conversation).filter(
-                Conversation.timestamp < cutoff_date
+            # Delete old conversations
+            self.sql_session.query(ConversationHistory).filter(
+                ConversationHistory.timestamp < cutoff_date
             ).delete()
             
+            # Mark old sessions as inactive
             self.sql_session.query(UserSession).filter(
                 UserSession.last_activity < cutoff_date
             ).update({"is_active": False})
@@ -239,5 +221,7 @@ class AgentDatabaseIntegration:
             
         except Exception as e:
             self.sql_session.rollback()
-            logger.error(f"Failed to cleanup old sessions: {e}")
-            raise
+            raise Exception(f"Failed to cleanup old sessions: {str(e)}")
+
+# Global integration instance
+agent_db = AgentDatabaseIntegration()
