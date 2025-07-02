@@ -1,0 +1,47 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['ai_challenge_postgres:5432']
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['ai_challenge_redis:6379']
+    scrape_interval: 30s
+
+  - job_name: 'neo4j'
+    static_configs:
+      - targets: ['ai_challenge_neo4j:7474']
+    scrape_interval: 30s
+    metrics_path: '/db/manage/server/jmx/domain/neo4j'
+
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['ai_challenge_minio:9000']
+    scrape_interval: 30s
+    metrics_path: '/minio/v2/metrics/cluster'
+
+  - job_name: 'lancedb'
+    static_configs:
+      - targets: ['ai_challenge_lancedb:8002']
+    scrape_interval: 30s
+    metrics_path: '/health'
+
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['ai_challenge_grafana:3000']
+    scrape_interval: 30s
+    metrics_path: '/metrics'

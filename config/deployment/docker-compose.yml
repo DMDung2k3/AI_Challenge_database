@@ -1,163 +1,113 @@
-version: "3.8"
+# docker-compose.yml - Database services cho agents
+
 services:
+  # PostgreSQL cho metadata storage
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:15
     container_name: ai_challenge_postgres
     environment:
       POSTGRES_DB: ai_challenge
       POSTGRES_USER: ai_user
       POSTGRES_PASSWORD: ai_password
-      PGDATA: /var/lib/postgresql/data/pgdata
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     ports:
       - "5432:5432"
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "ai_user"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: "4G"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     networks:
       - ai_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_user -d ai_challenge"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
+  # Redis cho caching và session storage
   redis:
-    image: redis:7.0-alpine
+    image: redis:7-alpine
     container_name: ai_challenge_redis
-    command: redis-server --appendonly yes --requirepass ai_password
-    volumes:
-      - redis_data:/data
     ports:
       - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "ai_password", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: "2G"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
     networks:
       - ai_network
+    restart: unless-stopped
 
+  # Neo4j cho knowledge graph
   neo4j:
-    image: neo4j:5.11
+    image: neo4j:5
     container_name: ai_challenge_neo4j
     environment:
       NEO4J_AUTH: neo4j/ai_password
-      NEO4J_dbms_memory_pagecache_size: 2G
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "7474:7474"  # Web interface
+      - "7687:7687"  # Bolt
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
-    ports:
-      - "7687:7687"
-      - "7474:7474"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7474"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: "4G"
     networks:
       - ai_network
+    restart: unless-stopped
 
-  lancedb:
-    image: python:3.10.10
-    container_name: ai_challenge_lancedb
-    command: python -m lancedb --uri /data/lancedb
+  # Elasticsearch cho full-text search
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: ai_challenge_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
     volumes:
-      - lancedb_data:/data/lancedb
-    ports:
-      - "8002:8002"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: "4G"
+      - es_data:/usr/share/elasticsearch/data
     networks:
       - ai_network
+    restart: unless-stopped
 
+  # Minio cho object storage
   minio:
     image: minio/minio:latest
     container_name: ai_challenge_minio
-    command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"  # API
+      - "9001:9001"  # Console
     volumes:
       - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9001/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: "2G"
+    command: server /data --console-address ":9001"
     networks:
       - ai_network
+    restart: unless-stopped
 
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: ai_challenge_prometheus
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-    ports:
-      - "9090:9090"
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: "1G"
-    networks:
-      - ai_network
-
+  # Grafana cho monitoring
   grafana:
     image: grafana/grafana:latest
     container_name: ai_challenge_grafana
     environment:
-      GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - grafana_data:/var/lib/grafana
     ports:
       - "3001:3000"
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: "1G"
+    volumes:
+      - grafana_data:/var/lib/grafana
     networks:
       - ai_network
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
   neo4j_data:
   neo4j_logs:
-  lancedb_data:
+  es_data:
   minio_data:
   grafana_data:
 

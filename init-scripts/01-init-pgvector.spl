@@ -1,0 +1,71 @@
+-- Initialize pgvector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Verify installation
+SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';
+
+-- Create basic tables for AI Challenge
+CREATE TABLE IF NOT EXISTS video_metadata (
+    id SERIAL PRIMARY KEY,
+    filename VARCHAR(255) NOT NULL,
+    file_path TEXT NOT NULL,
+    file_size BIGINT,
+    duration FLOAT,
+    resolution VARCHAR(20),
+    fps FLOAT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS video_embeddings (
+    id SERIAL PRIMARY KEY,
+    video_id INTEGER REFERENCES video_metadata(id) ON DELETE CASCADE,
+    embedding vector(1536), -- OpenAI embedding dimension
+    timestamp_start FLOAT,
+    timestamp_end FLOAT,
+    content_type VARCHAR(50), -- 'visual', 'audio', 'transcript'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) UNIQUE NOT NULL,
+    user_id VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) REFERENCES user_sessions(session_id),
+    message TEXT NOT NULL,
+    response TEXT,
+    message_type VARCHAR(50), -- 'user', 'assistant', 'system'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB
+);
+
+CREATE TABLE IF NOT EXISTS processing_jobs (
+    id SERIAL PRIMARY KEY,
+    job_id VARCHAR(255) UNIQUE NOT NULL,
+    job_type VARCHAR(100) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'processing', 'completed', 'failed'
+    input_data JSONB,
+    output_data JSONB,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_video_embeddings_vector ON video_embeddings USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_video_metadata_filename ON video_metadata(filename);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_session_id ON user_sessions(session_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations(session_id);
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_status ON processing_jobs(status);
+
+-- Grant permissions
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ai_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ai_user;
