@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lancedb
+  labels:
+    app: ai-challenge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lancedb
+  template:
+    metadata:
+      labels:
+        app: lancedb
+    spec:
+      containers:
+      - name: lancedb
+        image: python:3.10.10
+        command: ["python", "-m", "lancedb", "--uri", "/data/lancedb"]
+        ports:
+        - containerPort: 8002
+        resources:
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+        volumeMounts:
+        - name: lancedb-data
+          mountPath: /data/lancedb
+      volumes:
+      - name: lancedb-data
+        persistentVolumeClaim:
+          claimName: lancedb-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lancedb-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

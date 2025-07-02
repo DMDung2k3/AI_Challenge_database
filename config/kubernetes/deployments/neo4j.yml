@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neo4j
+  labels:
+    app: ai-challenge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neo4j
+  template:
+    metadata:
+      labels:
+        app: neo4j
+    spec:
+      containers:
+      - name: neo4j
+        image: neo4j:5.11
+        env:
+        - name: NEO4J_AUTH
+          value: neo4j/ai_password
+        - name: NEO4J_dbms_memory_pagecache_size
+          value: 2G
+        - name: NEO4J_PLUGINS
+          value: '["apoc"]'
+        - name: NEO4J_dbms_security_procedures_unrestricted
+          value: apoc.*
+        ports:
+        - containerPort: 7687
+        - containerPort: 7474
+        resources:
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+        volumeMounts:
+        - name: neo4j-data
+          mountPath: /data
+        - name: neo4j-logs
+          mountPath: /logs
+      volumes:
+      - name: neo4j-data
+        persistentVolumeClaim:
+          claimName: neo4j-data-pvc
+      - name: neo4j-logs
+        persistentVolumeClaim:
+          claimName: neo4j-logs-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neo4j-data-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neo4j-logs-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
